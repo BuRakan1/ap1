@@ -1,0 +1,912 @@
+def export_section_to_word(self, course_name, section_name):
+    """تصدير كشف حضور للفصل المحدد"""
+    if not self.current_user["permissions"]["can_export_data"]:
+        messagebox.showwarning("تنبيه", "ليس لديك صلاحية تصدير البيانات")
+        return
+
+    try:
+        # التأكد من وجود مكتبة python-docx
+        if 'Document' not in globals():
+            messagebox.showerror("خطأ",
+                                 "لم يتم العثور على مكتبة python-docx. قم بتثبيتها باستخدام: pip install python-docx")
+            return
+
+        # الحصول على بيانات المتدربين في الفصل المحدد (فقط غير المستبعدين)
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT t.national_id, t.name, t.rank
+            FROM trainees t
+            JOIN student_sections s ON t.national_id = s.national_id
+            WHERE t.course=? AND s.section_name=? AND t.is_excluded=0
+            ORDER BY t.name
+        """, (course_name, section_name))
+        students_data = cursor.fetchall()
+
+        if not students_data:
+            messagebox.showinfo("ملاحظة",
+                                f"لا يوجد متدربين نشطين مسجلين في فصل '{section_name}' من دورة '{course_name}'")
+            return
+
+        # إنشاء مستند جديد
+        doc = Document()
+
+        # إعداد المستند للغة العربية (RTL) بتنسيق عمودي
+        section = doc.sections[0]
+        section.page_width = Inches(8.27)  # A4 width in portrait
+        section.page_height = Inches(11.69)  # A4 height in portrait
+        section.left_margin = Inches(0.5)
+        section.right_margin = Inches(0.5)
+        section.top_margin = Inches(0.7)
+        section.bottom_margin = Inches(0.7)
+
+        # إعداد الرأس (Header) مع خط فاصل
+        header = section.header
+        header_para = header.paragraphs[0]
+        header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        header_run = header_para.add_run(f'كشف حضور وغياب متدربين فصل: {section_name} - دورة: {course_name}')
+        header_run.font.size = Pt(14)
+        header_run.font.bold = True
+        header_run.font.rtl = True
+
+        # إضافة إجمالي عدد المتدربين في الرأس
+        header_para = header.add_paragraph()
+        header_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        student_count_run = header_para.add_run(f'إجمالي عدد المتدربين: {len(students_data)}')
+        student_count_run.font.size = Pt(12)
+        student_count_run.font.bold = True
+        student_count_run.font.rtl = True
+
+        # إضافة خط أفقي بعد معلومات الدورة في الرأس
+        header_para.paragraph_format.border_bottom = True
+
+        # إضافة تاريخ الطباعة في الرأس
+        today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        header_para = header.add_paragraph()
+        header_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        header_date = header_para.add_run(f'تاريخ الطباعة: {today_date}')
+        header_date.font.size = Pt(9)
+        header_date.font.rtl = True
+
+        # إعداد التذييل بشكل بسيط
+        footer = section.footer
+        footer_para = footer.paragraphs[0]
+        footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        footer_text = footer_para.add_run('نظام إدارة الحضور والغياب - قسم شؤون المدربين')
+        footer_text.font.size = Pt(9)
+        footer_text.font.rtl = True
+
+        # إضافة فقرة فاصلة قبل الجدول
+        doc.add_paragraph()
+
+        # إنشاء جدول للحضور والغياب
+        table = doc.add_table(rows=1, cols=8)
+        table.style = 'Table Grid'
+
+        # تعريف رأس الجدول
+        hdr_cells = table.rows[0].cells
+        headers = ["العدد", "الاسم", "رقم الهوية", "الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس"]
+
+        # إضافة العناوين من اليمين إلى اليسار (عكس الترتيب)
+        for i, header in enumerate(reversed(headers)):
+            hdr_cells[i].text = header
+            # تنسيق العناوين
+            hdr_cells[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in hdr_cells[i].paragraphs[0].runs:
+                run.font.bold = True
+                run.font.size = Pt(11)
+                run.font.rtl = True
+
+            # تطبيق تظليل لرأس الجدول بطريقة بسيطة
+            try:
+                shading_elm = parse_xml(r'<w:shd {} w:fill="D9D9D9"/>'.format(nsdecls('w')))
+                hdr_cells[i]._element.get_or_add_tcPr().append(shading_elm)
+            except:
+                # في حالة حدوث خطأ، نتجاهل التظليل
+                pass
+
+        # إضافة بيانات المتدربين
+        for i, student in enumerate(students_data):
+            national_id, name, rank = student
+            row_cells = table.add_row().cells
+
+            # إضافة البيانات من اليمين إلى اليسار (عكس الترتيب)
+            # العدد (تسلسلي)
+            row_cells[7].text = str(i + 1)
+            row_cells[7].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # الاسم - تغيير المحاذاة إلى توسيط
+            row_cells[6].text = name
+            row_cells[6].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # رقم الهوية
+            row_cells[5].text = national_id
+            row_cells[5].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # الأيام تبقى فارغة للتعبئة يدوياً
+            for day_idx in range(5):
+                row_cells[day_idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            # تنسيق النص في الصف
+            for cell in row_cells:
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.rtl = True
+                        run.font.size = Pt(10)
+
+        # ضبط أبعاد الجدول لتناسب التنسيق العمودي - زيادة عرض عمود الاسم
+        table.autofit = False
+        col_widths = [0.5, 2.6, 1.4, 0.7, 0.7, 0.7, 0.7, 0.7]  # زيادة عرض عمود الاسم (2.6 بدلاً من 2.0)
+
+        # تطبيق العرض المحدد لكل عمود
+        try:
+            for i, width in enumerate(col_widths):
+                table.columns[i].width = Inches(width)
+        except:
+            # في حالة حدوث خطأ، نتجاهل تعديل العرض
+            pass
+
+        # إضافة مساحة بعد الجدول
+        doc.add_paragraph()
+
+        # إضافة جدول للتوقيعات
+        sig_table = doc.add_table(rows=1, cols=3)
+        sig_table.style = 'Table Grid'
+        sig_cells = sig_table.rows[0].cells
+
+        sig_cells[2].text = "المسؤول: _________________"
+        sig_cells[1].text = "رئيس القسم: ______________"
+        sig_cells[0].text = "المدير: __________________"
+
+        for cell in sig_cells:
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in cell.paragraphs[0].runs:
+                run.font.rtl = True
+                run.font.size = Pt(11)
+
+        # إضافة ملاحظات في نهاية المستند
+        doc.add_paragraph()
+        notes_para = doc.add_paragraph()
+        notes_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        notes_para.add_run("ملاحظات:").bold = True
+
+        # إضافة خطوط للملاحظات
+        for _ in range(3):
+            line_para = doc.add_paragraph("_" * 80)
+            line_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+        # حفظ المستند
+        export_file = filedialog.asksaveasfilename(
+            defaultextension=".docx",
+            filetypes=[("Word documents", "*.docx")],
+            initialfile=f"كشف_حضور_{section_name}_{course_name}.docx"
+        )
+
+        if export_file:
+            doc.save(export_file)
+            messagebox.showinfo("نجاح", f"تم تصدير كشف الحضور لفصل '{section_name}' بنجاح إلى:\n{export_file}")
+            # فتح الملف مباشرة بعد التصدير
+            try:
+                os.startfile(export_file)
+            except:
+                # في حالة عدم تمكن النظام من فتح الملف، تجاهل الخطأ
+                pass
+
+    except Exception as e:
+        messagebox.showerror("خطأ", f"حدث خطأ أثناء تصدير بيانات الفصل: {str(e)}")
+
+def export_section_diligence_behavior(self, course_name, section_name):
+    """وظيفة تصدير بيان المواظبة والسلوك للفصل المحدد بتنسيق Word مع ترتيب المتدربين حسب الدرجة"""
+    if not self.current_user["permissions"]["can_export_data"]:
+        messagebox.showwarning("تنبيه", "ليس لديك صلاحية تصدير البيانات")
+        return
+
+    try:
+        # التأكد من وجود مكتبة python-docx
+        if 'Document' not in globals():
+            messagebox.showerror("خطأ",
+                                 "لم يتم العثور على مكتبة python-docx. قم بتثبيتها باستخدام: pip install python-docx")
+            return
+
+        # الحصول على بيانات المتدربين في الفصل المحدد (فقط غير المستبعدين)
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT t.national_id, t.name, t.rank
+            FROM trainees t
+            JOIN student_sections s ON t.national_id = s.national_id
+            WHERE t.course=? AND s.section_name=? AND t.is_excluded=0
+            ORDER BY t.name
+        """, (course_name, section_name))
+        students_data = cursor.fetchall()
+
+        if not students_data:
+            messagebox.showinfo("ملاحظة",
+                                f"لا يوجد متدربين نشطين مسجلين في فصل '{section_name}' من دورة '{course_name}'")
+            return
+
+        # إنشاء نافذة حالة لإظهار تقدم التصدير
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("جاري حساب المواظبة والسلوك")
+        progress_window.geometry("400x150")
+        progress_window.configure(bg=self.colors["light"])
+        progress_window.transient(self.root)
+        progress_window.resizable(False, False)
+        progress_window.grab_set()
+
+        x = (progress_window.winfo_screenwidth() - 400) // 2
+        y = (progress_window.winfo_screenheight() - 150) // 2
+        progress_window.geometry(f"400x150+{x}+{y}")
+
+        tk.Label(
+            progress_window,
+            text=f"جاري حساب نتائج المواظبة والسلوك لفصل: {section_name}",
+            font=self.fonts["text_bold"],
+            bg=self.colors["light"],
+            pady=10
+        ).pack()
+
+        progress_var = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(
+            progress_window,
+            variable=progress_var,
+            maximum=100,
+            length=350
+        )
+        progress_bar.pack(pady=10)
+
+        status_label = tk.Label(
+            progress_window,
+            text="جاري تحليل بيانات الحضور والغياب...",
+            font=self.fonts["text"],
+            bg=self.colors["light"]
+        )
+        status_label.pack(pady=5)
+
+        progress_window.update()
+
+        # إنشاء مستند جديد
+        doc = Document()
+
+        # إعداد المستند للغة العربية (RTL)
+        section = doc.sections[0]
+        section.page_width = Inches(8.27)  # A4 width
+        section.page_height = Inches(11.69)  # A4 height
+        section.left_margin = Inches(0.7)
+        section.right_margin = Inches(0.7)
+        section.top_margin = Inches(0.7)
+        section.bottom_margin = Inches(0.7)
+
+        # إضافة عنوان المستند
+        title = doc.add_heading(f'بيان المواظبة والسلوك لمتدربين فصل: {section_name} - دورة: {course_name}', level=0)
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for run in title.runs:
+            run.font.size = Pt(16)
+            run.font.bold = True
+            run.font.rtl = True
+
+        # إضافة معلومات الطباعة والتاريخ
+        date_info = doc.add_paragraph()
+        date_info.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        today_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        date_run = date_info.add_run(f'تاريخ الطباعة: {today_date}')
+        date_run.font.size = Pt(10)
+        date_run.font.rtl = True
+
+        # إضافة خط أفقي
+        border_paragraph = doc.add_paragraph()
+        border_paragraph.paragraph_format.border_bottom = True
+
+        # إنشاء جدول للمواظبة والسلوك
+        table = doc.add_table(rows=1, cols=6)
+        table.style = 'Table Grid'
+
+        # عناوين الجدول (من اليمين إلى اليسار)
+        hdr_cells = table.rows[0].cells
+        headers = ["عدد", "الاسم", "الرتبة", "رقم الهوية", "المواظبة", "السلوك"]
+
+        for i, header in enumerate(headers):
+            # حساب الموقع المناسب للعناوين (من اليمين إلى اليسار)
+            idx = len(headers) - i - 1
+            hdr_cells[idx].text = header
+            hdr_cells[idx].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in hdr_cells[idx].paragraphs[0].runs:
+                run.font.bold = True
+                run.font.size = Pt(12)
+                run.font.rtl = True
+
+            # تطبيق تظليل للرأس
+            try:
+                shading_elm = parse_xml(r'<w:shd {} w:fill="D9D9D9"/>'.format(nsdecls('w')))
+                hdr_cells[idx]._element.get_or_add_tcPr().append(shading_elm)
+            except:
+                pass
+
+        # معالجة بيانات كل متدرب وحساب درجة المواظبة
+        student_scores = []
+        total_students = len(students_data)
+
+        for index, student in enumerate(students_data):
+            national_id, name, rank = student
+
+            # تحديث شريط التقدم
+            progress_var.set((index / total_students) * 80)  # 80% للمعالجة
+            status_label.config(text=f"معالجة المتدرب {index + 1} من {total_students}: {name}")
+            progress_window.update()
+
+            # حساب درجة المواظبة:
+            # 1. الدرجة الأولية هي 100
+            # 2. خصم 4 درجات لكل غياب كامل
+            # 3. خصم 1 درجة لكل تأخير
+            # 4. خصم 0.5 درجة لكل غياب بعذر
+
+            # الاستعلام عن حالات الحضور للمتدرب
+            cursor.execute("""
+                SELECT status
+                FROM attendance
+                WHERE national_id=?
+            """, (national_id,))
+            attendance_records = cursor.fetchall()
+
+            diligence_score = 100.0  # البداية من 100
+
+            for record in attendance_records:
+                status = record[0]
+                if status == "غائب" or status == "غائب بعذر":  # تعديل: خصم 4 نقاط لـ "غائب بعذر"
+                    diligence_score -= 4.0
+                elif status == "متأخر":
+                    diligence_score -= 1.0
+                elif status == "حالة وفاة" or status == "منوم":  # إضافة: خصم 0.5 نقطة للحالات الجديدة
+                    diligence_score -= 0.5
+
+            # التأكد من عدم نزول الدرجة عن صفر
+            diligence_score = max(0, diligence_score)
+
+            # حفظ بيانات المتدرب مع الدرجة
+            student_scores.append((national_id, name, rank, diligence_score))
+
+        # ترتيب المتدربين تصاعدياً حسب درجة المواظبة (الأقل يأتي أولاً)
+        student_scores.sort(key=lambda x: x[3])
+
+        # إضافة بيانات المتدربين إلى الجدول بعد الترتيب
+        for index, (national_id, name, rank, diligence_score) in enumerate(student_scores):
+            # تحديث شريط التقدم
+            progress_var.set(80 + (index / total_students) * 15)  # 15% للترتيب والإضافة
+            status_label.config(text=f"إضافة المتدرب {index + 1} من {total_students} إلى التقرير")
+            progress_window.update()
+
+            # درجة السلوك دائمًا 100
+            behavior_score = 100.0
+
+            # إضافة صف جديد للمتدرب
+            row_cells = table.add_row().cells
+
+            # الترتيب من اليمين إلى اليسار
+            row_cells[5].text = str(index + 1)  # العدد التسلسلي
+            row_cells[4].text = name  # الاسم
+            row_cells[3].text = rank  # الرتبة
+            row_cells[2].text = national_id  # رقم الهوية
+            row_cells[1].text = f"{diligence_score:.1f}"  # المواظبة بدقة رقم عشري واحد
+            row_cells[0].text = f"{behavior_score:.0f}"  # السلوك (دائمًا 100)
+
+            # تنسيق الخلايا
+            for cell in row_cells:
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in cell.paragraphs[0].runs:
+                    run.font.rtl = True
+                    run.font.size = Pt(11)
+
+            # تلوين الصف حسب درجة المواظبة
+            if diligence_score < 90:  # إذا كانت الدرجة أقل من 90، تمييزها بلون فاتح
+                try:
+                    for cell in row_cells:
+                        shading_elm = parse_xml(r'<w:shd {} w:fill="FFDDDD"/>'.format(nsdecls('w')))
+                        cell._element.get_or_add_tcPr().append(shading_elm)
+                except:
+                    pass
+
+        # تنسيق الجدول
+        table.autofit = False
+        try:
+            # تعيين عرض الأعمدة (العرض بالبوصة)
+            widths = [0.8, 0.8, 1.2, 1.5, 2.5, 0.5]  # السلوك، المواظبة، الهوية، الرتبة، الاسم، العدد
+            for i, width in enumerate(widths):
+                table.columns[i].width = Inches(width)
+        except:
+            pass
+
+        # إضافة فقرة فاصلة بعد الجدول
+        doc.add_paragraph()
+
+        # إضافة جدول للتوقيعات
+        signature_table = doc.add_table(rows=1, cols=3)
+        signature_table.style = 'Table Grid'
+
+        sig_cells = signature_table.rows[0].cells
+        sig_cells[2].text = "مسؤول الحضور: _________________"
+        sig_cells[1].text = "رئيس القسم: __________________"
+        sig_cells[0].text = "مدير التدريب: ________________"
+
+        for cell in sig_cells:
+            cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in cell.paragraphs[0].runs:
+                run.font.rtl = True
+                run.font.size = Pt(11)
+
+        # إضافة نص توضيحي في نهاية المستند
+        doc.add_paragraph()
+        note_para = doc.add_paragraph()
+        note_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        note_run = note_para.add_run("ملاحظات حساب المواظبة:")
+        note_run.font.bold = True
+        note_run.font.rtl = True
+
+        notes = [
+            "- تبدأ درجة المواظبة من 100 درجة.",
+            "- يتم خصم 4 درجات عن كل يوم غياب.",
+            "- يتم خصم 4 درجات عن كل غياب بعذر.",
+            "- يتم خصم 1 درجة عن كل حالة تأخير.",
+            "- يتم خصم 0.5 درجة عن كل حالة وفاة.",
+            "- يتم خصم 0.5 درجة عن كل حالة منوم.",
+            "- درجة السلوك 100 درجة للجميع."
+        ]
+
+        for note in notes:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            p.add_run(note).font.rtl = True
+
+        # تحديث شريط التقدم
+        progress_var.set(95)
+        status_label.config(text="فتح حوار حفظ الملف...")
+        progress_window.update()
+
+        # حفظ المستند
+        export_file = filedialog.asksaveasfilename(
+            defaultextension=".docx",
+            filetypes=[("Word documents", "*.docx")],
+            initialfile=f"بيان_المواظبة_والسلوك_{section_name}_{course_name}.docx"
+        )
+
+        if export_file:
+            progress_var.set(95)
+            status_label.config(text="جاري حفظ الملف...")
+            progress_window.update()
+
+            doc.save(export_file)
+
+            progress_var.set(100)
+            status_label.config(text="تم تصدير البيان بنجاح!")
+            progress_window.update()
+
+            # إغلاق نافذة التقدم بعد ثانيتين
+            progress_window.after(2000, progress_window.destroy)
+
+            messagebox.showinfo("نجاح",
+                                f"تم تصدير بيان المواظبة والسلوك للفصل '{section_name}' بنجاح إلى:\n{export_file}")
+
+            # محاولة فتح الملف تلقائيًا
+            try:
+                os.startfile(export_file)
+            except:
+                pass
+        else:
+            progress_window.destroy()
+
+    except Exception as e:
+        try:
+            progress_window.destroy()
+        except:
+            pass
+        messagebox.showerror("خطأ", f"حدث خطأ أثناء تصدير بيان المواظبة والسلوك: {str(e)}")
+
+def backup_database(self):
+    """إنشاء نسخة احتياطية من قاعدة البيانات"""
+    if not self.current_user["permissions"]["is_admin"]:
+        messagebox.showwarning("تنبيه", "هذه الوظيفة متاحة للمشرفين فقط")
+        return
+
+    import shutil
+    import datetime
+    import os
+
+    # إنشاء مجلد للنسخ الاحتياطي إذا لم يكن موجوداً
+    backup_dir = "backup"
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+
+    # إنشاء اسم ملف النسخة الاحتياطية مع التاريخ والوقت
+    current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_file = os.path.join(backup_dir, f"attendance_backup_{current_time}.db")
+
+    # إغلاق الاتصال بقاعدة البيانات مؤقتاً
+    self.conn.commit()
+
+    try:
+        # نسخ ملف قاعدة البيانات
+        shutil.copy2("attendance.db", backup_file)
+        messagebox.showinfo("نجاح", f"تم إنشاء نسخة احتياطية في: {backup_file}")
+    except Exception as e:
+        messagebox.showerror("خطأ", f"حدث خطأ أثناء إنشاء النسخة الاحتياطية: {str(e)}")
+
+def restore_database(self):
+    """استرداد نسخة احتياطية من قاعدة البيانات"""
+    if not self.current_user["permissions"]["is_admin"]:
+        messagebox.showwarning("تنبيه", "هذه الوظيفة متاحة للمشرفين فقط")
+        return
+
+    import os
+    import shutil
+    import sys
+    import datetime
+
+    # التحقق من وجود مجلد النسخ الاحتياطي
+    backup_dir = "backup"
+    if not os.path.exists(backup_dir):
+        messagebox.showwarning("تنبيه", "لا يوجد مجلد للنسخ الاحتياطية")
+        return
+
+    # الحصول على قائمة ملفات النسخ الاحتياطية
+    backup_files = [f for f in os.listdir(backup_dir) if f.startswith("attendance_backup_") and f.endswith(".db")]
+
+    if not backup_files:
+        messagebox.showwarning("تنبيه", "لا توجد نسخ احتياطية متاحة")
+        return
+
+    # إنشاء نافذة لاختيار النسخة الاحتياطية
+    restore_window = tk.Toplevel(self.root)
+    restore_window.title("استرداد نسخة احتياطية")
+    restore_window.geometry("600x400")
+    restore_window.configure(bg=self.colors["light"])
+    restore_window.transient(self.root)
+    restore_window.grab_set()
+
+    # توسيط النافذة
+    x = (restore_window.winfo_screenwidth() - 600) // 2
+    y = (restore_window.winfo_screenheight() - 400) // 2
+    restore_window.geometry(f"600x400+{x}+{y}")
+
+    # عنوان النافذة
+    tk.Label(
+        restore_window,
+        text="استرداد نسخة احتياطية من قاعدة البيانات",
+        font=self.fonts["title"],
+        bg=self.colors["primary"],
+        fg="white",
+        padx=10, pady=10
+    ).pack(fill=tk.X)
+
+    # إطار القائمة
+    list_frame = tk.Frame(restore_window, bg=self.colors["light"])
+    list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    tk.Label(
+        list_frame,
+        text="اختر النسخة الاحتياطية التي تريد استردادها:",
+        font=self.fonts["text_bold"],
+        bg=self.colors["light"]
+    ).pack(anchor=tk.W, pady=(0, 10))
+
+    # إنشاء قائمة النسخ الاحتياطية
+    backup_listbox = tk.Listbox(
+        list_frame,
+        font=self.fonts["text"],
+        selectbackground=self.colors["primary"],
+        selectforeground="white"
+    )
+    backup_listbox.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+    # تعبئة القائمة بالملفات مرتبة من الأحدث إلى الأقدم
+    backup_files.sort(reverse=True)
+    for file in backup_files:
+        # استخراج التاريخ والوقت من اسم الملف
+        date_str = file.replace("attendance_backup_", "").replace(".db", "")
+        try:
+            # محاولة تنسيق التاريخ بشكل مقروء
+            date_year = date_str[:4]
+            date_month = date_str[4:6]
+            date_day = date_str[6:8]
+            time_hour = date_str[9:11]
+            time_min = date_str[11:13]
+            time_sec = date_str[13:15]
+            display_date = f"{date_year}-{date_month}-{date_day} {time_hour}:{time_min}:{time_sec}"
+        except:
+            display_date = date_str
+
+        backup_listbox.insert(tk.END, f"{display_date} - {file}")
+
+    # إطار الأزرار
+    button_frame = tk.Frame(restore_window, bg=self.colors["light"], pady=10)
+    button_frame.pack(fill=tk.X, padx=10)
+
+    # تخزين المتغيرات المطلوبة للدالة الداخلية
+    def do_restore():
+        """تنفيذ عملية استرداد النسخة الاحتياطية المحددة"""
+        selection = backup_listbox.curselection()
+        if not selection:
+            messagebox.showwarning("تنبيه", "الرجاء اختيار نسخة احتياطية")
+            return
+
+        selected_item = backup_listbox.get(selection[0])
+        backup_file = selected_item.split(" - ")[1]
+        backup_path = os.path.join(backup_dir, backup_file)
+
+        # التأكيد على استرداد النسخة الاحتياطية
+        if not messagebox.askokcancel(
+                "تأكيد الاسترداد",
+                "سيتم استبدال قاعدة البيانات الحالية بالنسخة الاحتياطية المحددة.\n\n"
+                "هذه العملية ستؤدي إلى فقدان أي تغييرات تمت منذ إنشاء هذه النسخة.\n\n"
+                "هل أنت متأكد من المتابعة؟",
+                icon="warning"
+        ):
+            return
+
+        # إغلاق الاتصال بقاعدة البيانات
+        self.conn.close()
+
+        try:
+            # إنشاء نسخة احتياطية إضافية من قاعدة البيانات الحالية (للأمان)
+            current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            safety_backup = os.path.join(backup_dir, f"pre_restore_{current_time}.db")
+
+            # نسخ ملف قاعدة البيانات الحالية كإجراء وقائي
+            try:
+                shutil.copy2("attendance.db", safety_backup)
+            except:
+                pass  # تجاهل الأخطاء في النسخ الوقائي
+
+            # استبدال قاعدة البيانات الحالية بالنسخة الاحتياطية
+            shutil.copy2(backup_path, "attendance.db")
+
+            messagebox.showinfo(
+                "نجاح",
+                f"تم استرداد النسخة الاحتياطية بنجاح.\n\n"
+                f"ستتم إعادة تشغيل النظام الآن لتطبيق التغييرات."
+            )
+
+            # إغلاق نافذة الاسترداد
+            restore_window.destroy()
+
+            # إعادة تشغيل البرنامج
+            self.root.destroy()
+            python = sys.executable
+            os.execl(python, python, *sys.argv)
+
+        except Exception as e:
+            messagebox.showerror(
+                "خطأ",
+                f"حدث خطأ أثناء استرداد النسخة الاحتياطية:\n{str(e)}\n\n"
+                "الرجاء إعادة تشغيل البرنامج يدوياً."
+            )
+            # محاولة إعادة فتح الاتصال بقاعدة البيانات في حال وجود خطأ
+            try:
+                self.conn = sqlite3.connect("attendance.db")
+            except:
+                pass
+
+    restore_btn = tk.Button(
+        button_frame,
+        text="استرداد النسخة المحددة",
+        font=self.fonts["text_bold"],
+        bg=self.colors["warning"],
+        fg="white",
+        padx=15, pady=5,
+        bd=0, relief=tk.FLAT,
+        cursor="hand2",
+        command=do_restore
+    )
+    restore_btn.pack(side=tk.LEFT, padx=5)
+
+    cancel_btn = tk.Button(
+        button_frame,
+        text="إلغاء",
+        font=self.fonts["text_bold"],
+        bg=self.colors["dark"],
+        fg="white",
+        padx=15, pady=5,
+        bd=0, relief=tk.FLAT,
+        cursor="hand2",
+        command=restore_window.destroy
+    )
+    cancel_btn.pack(side=tk.RIGHT, padx=5)
+
+def export_student_absence_reports(self, student_info, attendance_records):
+    """
+    تصدير محاضر غيابات المتدرب (محضر منفصل لكل يوم غياب)
+
+    Args:
+        student_info: معلومات المتدرب (national_id, name, rank, course, ...)
+        attendance_records: سجلات الحضور والغياب للمتدرب
+    """
+    try:
+        # التأكد من وجود مكتبة python-docx
+        if 'Document' not in globals():
+            messagebox.showerror("خطأ",
+                                 "لم يتم العثور على مكتبة python-docx. قم بتثبيتها باستخدام: pip install python-docx")
+            return
+
+        # استخراج المعلومات من البيانات
+        nid = student_info[0]
+        name = student_info[1]
+        rank = student_info[2]
+        course = student_info[3]
+
+        # البحث عن سجلات الغياب فقط وترتيبها من الأقدم للأحدث
+        absence_records = []
+        for record in attendance_records:
+            status = record[7]  # Status column
+            if status == "غائب":
+                absence_records.append(record)
+
+        # ترتيب سجلات الغياب من الأقدم للأحدث
+        absence_records = sorted(absence_records, key=lambda x: x[6])
+
+        if not absence_records:
+            messagebox.showinfo("معلومات", "لا توجد سجلات غياب لهذا المتدرب")
+            return
+
+        # إنشاء مستند جديد
+        doc = Document()
+
+        # إعداد المستند للغة العربية (RTL)
+        section = doc.sections[0]
+        section.page_width = Inches(8.5)
+        section.page_height = Inches(11)
+        section.left_margin = Inches(1.0)
+        section.right_margin = Inches(1.0)
+        section.top_margin = Inches(1.0)
+        section.bottom_margin = Inches(1.0)
+
+        # لكل سجل غياب، إنشاء صفحة جديدة
+        for i, record in enumerate(absence_records):
+            if i > 0:
+                doc.add_page_break()
+
+            # تاريخ الغياب
+            absence_date = record[6]  # Date column
+
+            # إضافة عنوان المستند
+            title = doc.add_heading('محضر غياب', level=0)
+            title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in title.runs:
+                run.font.size = Pt(18)
+                run.font.bold = True
+                run.font.rtl = True
+
+            # إضافة تاريخ الغياب تحت العنوان
+            date_paragraph = doc.add_paragraph()
+            date_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            date_run = date_paragraph.add_run(f"تاريخ الغياب: {absence_date}")
+            date_run.font.size = Pt(14)
+            date_run.font.bold = True
+            date_run.font.rtl = True
+
+            # إضافة خط أفقي
+            doc.add_paragraph().paragraph_format.border_bottom = True
+
+            # إضافة جدول معلومات المتدرب
+            doc.add_paragraph()  # فراغ قبل الجدول
+            student_table = doc.add_table(rows=1, cols=4)
+            student_table.style = 'Table Grid'
+
+            # إضافة عناوين الجدول
+            header_cells = student_table.rows[0].cells
+
+            # نظراً لأن اللغة العربية RTL، نضيف العناوين بشكل معكوس
+            header_cells[3].text = "الاسم"
+            header_cells[2].text = "الرتبة"
+            header_cells[1].text = "رقم الهوية"
+            header_cells[0].text = "الدورة"
+
+            # تنسيق عناوين الجدول
+            for cell in header_cells:
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.bold = True
+                        run.font.rtl = True
+                        run.font.size = Pt(12)
+
+                # إضافة تظليل للرأس
+                try:
+                    shading_elm = parse_xml(r'<w:shd {} w:fill="DDDDDD"/>'.format(nsdecls('w')))
+                    cell._element.get_or_add_tcPr().append(shading_elm)
+                except:
+                    pass
+
+            # إضافة بيانات المتدرب
+            data_row = student_table.add_row().cells
+
+            # نضيف البيانات بشكل معكوس بسبب RTL
+            data_row[3].text = name
+            data_row[2].text = rank
+            data_row[1].text = nid
+            data_row[0].text = course
+
+            # تنسيق بيانات المتدرب
+            for cell in data_row:
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.rtl = True
+                        run.font.size = Pt(12)
+
+            # ضبط عرض الجدول
+            student_table.autofit = False
+            try:
+                col_widths = [2.5, 1.5, 1.5, 2.0]  # العرض بالبوصة (الدورة، الهوية، الرتبة، الاسم)
+                for i, width in enumerate(col_widths):
+                    student_table.columns[i].width = Inches(width)
+            except:
+                pass
+
+            # إضافة نص المحضر
+            doc.add_paragraph()  # فراغ بعد الجدول
+
+            absence_paragraph = doc.add_paragraph()
+            absence_paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            absence_paragraph.paragraph_format.space_after = Pt(12)
+            absence_text = f"أنه في يوم {self.get_arabic_day_name(absence_date)} الموافق {absence_date} قد تغيب المتدرب المذكور أعلاه عن دورة {course} وبناءً عليه أعد هذا المحضر للاطلاع."
+            absence_run = absence_paragraph.add_run(absence_text)
+            absence_run.font.rtl = True
+            absence_run.font.size = Pt(12)
+
+            # إضافة مكان للتوقيعات
+            doc.add_paragraph()
+            doc.add_paragraph()
+
+            signature_table = doc.add_table(rows=1, cols=3)
+            signature_table.style = 'Table Grid'
+
+            sig_cells = signature_table.rows[0].cells
+            sig_cells[2].text = "مسؤول الحضور: _________________"
+            sig_cells[1].text = "رئيس القسم: __________________"
+            sig_cells[0].text = "مدير التدريب: ________________"
+
+            for cell in sig_cells:
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for run in cell.paragraphs[0].runs:
+                    run.font.rtl = True
+                    run.font.size = Pt(11)
+
+            # إضافة تاريخ الطباعة
+            doc.add_paragraph()
+
+            now = datetime.datetime.now()
+            date_print_str = now.strftime("%Y-%m-%d")
+
+            print_date = doc.add_paragraph()
+            print_date.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            print_date_run = print_date.add_run(f"تاريخ الطباعة: {date_print_str}")
+            print_date_run.font.size = Pt(9)
+            print_date_run.font.rtl = True
+
+        # حفظ المستند
+        export_file = filedialog.asksaveasfilename(
+            defaultextension=".docx",
+            filetypes=[("Word documents", "*.docx")],
+            initialfile=f"محاضر_غياب_{name}_{nid}.docx"
+        )
+
+        if export_file:
+            doc.save(export_file)
+            messagebox.showinfo("نجاح",
+                                f"تم تصدير محاضر الغياب ({len(absence_records)} محضر) بنجاح إلى:\n{export_file}")
+
+    except Exception as e:
+        messagebox.showerror("خطأ", f"حدث خطأ أثناء تصدير محاضر الغياب: {str(e)}")
+
+def get_arabic_day_name(self, date_str):
+    """تحويل التاريخ إلى اسم اليوم بالعربية"""
+    try:
+        # تحويل النص إلى تاريخ
+        date_obj = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+
+        # الحصول على رقم اليوم في الأسبوع (0=الاثنين، 6=الأحد)
+        day_num = date_obj.weekday()
+
+        # قائمة أيام الأسبوع بالعربية (مرتبة حسب نظام Python للأيام)
+        arabic_days = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+
+        return arabic_days[day_num]
+    except:
+        # في حال حدوث أي خطأ، نعيد نص التاريخ كما هو
+        return date_str
